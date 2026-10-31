@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install runtime deps used by the pure-Python modules
+        run: |
+          python -m pip install --upgrade pip
+          # open3d / Pillow / pyzipper are only needed by the optional adapters
+          # and the Blender-side scripts, so CI installs the slim set the test
+          # suite actually imports.
+          pip install "numpy" "scipy" "trimesh"
+      - name: Unit tests (no Blender required)
+        run: python -m unittest discover -s tests -t . -v
+      - name: Parameter contract rejects an empty set
+        run: |
+          python - <<'PY'
+          from core.params import Params
+          errors = Params().validate()
+          assert errors, "the published contract must not be buildable without values"
+          print("ok:", len(errors), "values still required")
+          PY
+
+  privacy:
+    name: privacy scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No local paths, hosts, credentials or tuned design values
+        run: bash scripts/privacy-scan.sh
+
+  compile:
+    name: byte-compile everything
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m compileall -q core cli pipeline adapters scripts tests tools

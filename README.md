@@ -1,5 +1,7 @@
 # HeadShell Toolkit
 
+[![CI](https://github.com/LUgABeEEE/headshell-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/LUgABeEEE/headshell-toolkit/actions/workflows/ci.yml)
+
 无头 Blender 头壳工具链：**参数契约 → 壳体外壳 → 开孔 / 通风 → 打印检查 → 评审渲染**。
 所有几何工作都在脚本里完成，可在没有桌面的机器上跑；不依赖任何在线 3D 服务。
 
@@ -56,6 +58,11 @@ tools/blender-safe.sh -b --factory-startup -P tools/studio_pair.py -- \
 
 ## 许可
 
-`core/`、`pipeline/`、`cli/`、`adapters/`、`tools/` 为本项目自有代码，按
-`ARCHITECTURE.md` 的说明以 MIT 发布（正式 LICENSE 文件待补）。
-第三方名称仅用于说明兼容性，不含其代码或资产。
+MIT，见 [LICENSE](LICENSE)。`core/`、`pipeline/`、`cli/`、`adapters/`、`tools/` 均为本项目自有代码，
+不含任何第三方资产。
+
+## 持续集成
+
+`.github/workflows/ci.yml` 三件事：Python 3.11/3.12 跑单测、字节码编译全仓、
+以及 `scripts/privacy-scan.sh` —— 一条扫描规则，防止本地路径 / 主机名 / 凭据文件名 /
+调好的毫米参数再次混进公开树（本地也能直接跑）。

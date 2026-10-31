@@ -82,7 +82,7 @@ apply_boolean(back, back_cutter)
 ipd = float(_req(cfg, "ipd_mm"))
 eye_z = _req(cfg, "eye_z_mm")
 eye_r = cfg.get("eye_radius_mm", 22.0)
-eye_y = cfg.get("eye_y_mm", 88.0)
+eye_y = float(_req(cfg, "eye_y_mm"))
 for sign, label in ((1, "l"), (-1, "r")):
     cutter = cylinder("eye_" + label, (sign * ipd / 2.0, eye_y, eye_z), eye_r, 140.0)
     apply_boolean(front, cutter)
