@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pylib/
+.tools/
+out/
+incoming/
+*.log
+.DS_Store

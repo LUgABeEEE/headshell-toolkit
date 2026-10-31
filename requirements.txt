@@ -1,0 +1,11 @@
+# Python deps for the headshell toolchain (non-Blender side).
+# Blender-only modules (bpy / mathutils / bmesh) ship with Blender itself.
+# Installed into .pylib/ by ../setup/bootstrap.sh; face/* scripts put it on sys.path.
+numpy==2.5.4
+scipy==1.18.1
+trimesh==5.1.1
+open3d==0.20.0
+Pillow==13.0.0
+PyYAML==6.0.1
+pyzipper==0.4.0
+pycryptodomex==3.24.1

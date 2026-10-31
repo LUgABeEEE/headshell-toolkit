@@ -1,0 +1,343 @@
+{
+  "schema": "kig-headshell/pipeline-metrics/v1",
+  "title": "打印管线质量契约（冻结 v1）的量化阈值与检查命令",
+  "frozen_at": "2026-10-19T14:05:00+08:00",
+  "unit": "mm",
+  "workdir": "<local-path>",
+  "run_note": "所有命令在 workdir 下用 bash -c 直接执行；依赖 PYTHONPATH=.pylib（numpy 2.5.4 / scipy 1.18.1 / trimesh 5.1.1），全部本地实现，禁止调用付费 3D API。",
+  "independence": "本契约与全部检查不依赖前脸（face/）任务；fixture out/v48/shell.stl 通过 S1 门禁（wall+watertight）后才允许接入前脸输入到 S2+。",
+  "fixture": {
+    "path": "out/v48/shell.stl",
+    "role": "S1 抽壳阶段基线 fixture（只读，不修改）",
+    "sha256": "ae36b556de6ff46ce2808d1d3be104ee20660fefa6b32c5dfbeafefb42c42284",
+    "triangles": null,
+    "bbox_mm": [
+      null,
+      null,
+      null
+    ],
+    "volume_cm3": null,
+    "bodies": null,
+    "euler": null,
+    "read_only": true
+  },
+  "wall": {
+    "stage": "S1 抽壳",
+    "method": "内向法线两跳射线（Möller–Trumbore + 三角形质心 KD-tree 候选），采样点从表面沿 -normal 打入，首命中距离 = 局部壁厚；6000 采样，种子 0。",
+    "target_mm": null,
+    "thresholds": {
+      "median_mm": [
+        null,
+        null
+      ],
+      "p05_mm_min": null,
+      "mean_2V_over_A_mm": [
+        null,
+        null
+      ],
+      "miss_or_degenerate_pct_max": null
+    },
+    "command": "PYTHONPATH=.pylib python3 - out/v48/shell.stl 6000 <<'PY'\n# C1 wall-thickness check: inward-normal ray, first-hit distance.\n# Run: PYTHONPATH=.pylib python3 /tmp/c1_wall.py <stl> [samples]\nimport json\nimport sys\n\nimport numpy as np\nimport trimesh\nfrom scipy.spatial import cKDTree\n\n\ndef wall_check(path, samples=6000, seed=0):\n    mesh = trimesh.load(path)\n    tris = mesh.triangles\n    cents = tris.mean(axis=1)\n    tree = cKDTree(cents)\n    pts, fidx = trimesh.sample.sample_surface(mesh, samples, seed=seed)\n    nrm = mesh.face_normals[fidx]\n    eps = 1e-3\n    origins = pts - nrm * eps\n    dirs = -nrm\n    thick = []\n    misses = 0\n    degenerate = 0\n    v0 = tris[:, 0, :]\n    e1 = tris[:, 1, :] - v0\n    e2 = tris[:, 2, :] - v0\n    for i in range(len(origins)):\n        o = origins[i]\n        d = dirs[i]\n        r = 6.0\n        hit_t = None\n        while r <= 4096.0:\n            cand = tree.query_ball_point(o, r)\n            if len(cand):\n                idx = np.asarray(cand, dtype=np.int64)\n                # Moller-Trumbore, vectorised over candidates\n                pv = np.cross(d, e2[idx])\n                det = np.einsum(\"ij,ij->i\", e1[idx], pv)\n                ok = np.abs(det) > 1e-12\n                inv = np.zeros_like(det)\n                inv[ok] = 1.0 / det[ok]\n                tv = o - v0[idx]\n                u = np.einsum(\"ij,ij->i\", tv, pv) * inv\n                qv = np.cross(tv, e1[idx])\n                v = np.einsum(\"ij,ij->i\", d[None, :], qv) * 1.0 * inv\n                t = np.einsum(\"ij,ij->i\", e2[idx], qv) * inv\n                good = ok & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (t > 1e-3)\n                if good.any():\n                    hit_t = float(np.min(t[good]))\n                    break\n            r *= 2\n        if hit_t is None:\n            misses += 1\n        elif hit_t < 0.05:\n            degenerate += 1\n        else:\n            thick.append(hit_t)\n    a = np.asarray(thick)\n    vol = float(mesh.volume / 1000.0)\n    area = float(mesh.area)\n    out = {\n        \"check\": \"wall\",\n        \"stl\": path,\n        \"samples\": int(samples),\n        \"hits\": int(a.size),\n        \"misses\": int(misses),\n        \"degenerate_under_0.05mm\": int(degenerate),\n        \"median_mm\": round(float(np.median(a)), 3) if a.size else None,\n        \"p05_mm\": round(float(np.percentile(a, 5)), 3) if a.size else None,\n        \"p95_mm\": round(float(np.percentile(a, 95)), 3) if a.size else None,\n        \"min_mm\": round(float(a.min()), 3) if a.size else None,\n        \"mean_wall_volume_over_area_mm\": round(2.0 * abs(mesh.volume) / mesh.area, 3),\n        \"volume_cm3\": round(vol, 2),\n        \"area_cm2\": round(area / 100.0, 2),\n    }\n    return out\n\n\nif __name__ == \"__main__\":\n    stl = sys.argv[1]\n    n = int(sys.argv[2]) if len(sys.argv) > 2 else 6000\n    print(json.dumps(wall_check(stl, n), indent=2))\nPY",
+    "command_general": "PYTHONPATH=.pylib python3 - <stl> <samples> <<'PY'\n# C1 wall-thickness check: inward-normal ray, first-hit distance.\n# Run: PYTHONPATH=.pylib python3 /tmp/c1_wall.py <stl> [samples]\nimport json\nimport sys\n\nimport numpy as np\nimport trimesh\nfrom scipy.spatial import cKDTree\n\n\ndef wall_check(path, samples=6000, seed=0):\n    mesh = trimesh.load(path)\n    tris = mesh.triangles\n    cents = tris.mean(axis=1)\n    tree = cKDTree(cents)\n    pts, fidx = trimesh.sample.sample_surface(mesh, samples, seed=seed)\n    nrm = mesh.face_normals[fidx]\n    eps = 1e-3\n    origins = pts - nrm * eps\n    dirs = -nrm\n    thick = []\n    misses = 0\n    degenerate = 0\n    v0 = tris[:, 0, :]\n    e1 = tris[:, 1, :] - v0\n    e2 = tris[:, 2, :] - v0\n    for i in range(len(origins)):\n        o = origins[i]\n        d = dirs[i]\n        r = 6.0\n        hit_t = None\n        while r <= 4096.0:\n            cand = tree.query_ball_point(o, r)\n            if len(cand):\n                idx = np.asarray(cand, dtype=np.int64)\n                # Moller-Trumbore, vectorised over candidates\n                pv = np.cross(d, e2[idx])\n                det = np.einsum(\"ij,ij->i\", e1[idx], pv)\n                ok = np.abs(det) > 1e-12\n                inv = np.zeros_like(det)\n                inv[ok] = 1.0 / det[ok]\n                tv = o - v0[idx]\n                u = np.einsum(\"ij,ij->i\", tv, pv) * inv\n                qv = np.cross(tv, e1[idx])\n                v = np.einsum(\"ij,ij->i\", d[None, :], qv) * 1.0 * inv\n                t = np.einsum(\"ij,ij->i\", e2[idx], qv) * inv\n                good = ok & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (t > 1e-3)\n                if good.any():\n                    hit_t = float(np.min(t[good]))\n                    break\n            r *= 2\n        if hit_t is None:\n            misses += 1\n        elif hit_t < 0.05:\n            degenerate += 1\n        else:\n            thick.append(hit_t)\n    a = np.asarray(thick)\n    vol = float(mesh.volume / 1000.0)\n    area = float(mesh.area)\n    out = {\n        \"check\": \"wall\",\n        \"stl\": path,\n        \"samples\": int(samples),\n        \"hits\": int(a.size),\n        \"misses\": int(misses),\n        \"degenerate_under_0.05mm\": int(degenerate),\n        \"median_mm\": round(float(np.median(a)), 3) if a.size else None,\n        \"p05_mm\": round(float(np.percentile(a, 5)), 3) if a.size else None,\n        \"p95_mm\": round(float(np.percentile(a, 95)), 3) if a.size else None,\n        \"min_mm\": round(float(a.min()), 3) if a.size else None,\n        \"mean_wall_volume_over_area_mm\": round(2.0 * abs(mesh.volume) / mesh.area, 3),\n        \"volume_cm3\": round(vol, 2),\n        \"area_cm2\": round(area / 100.0, 2),\n    }\n    return out\n\n\nif __name__ == \"__main__\":\n    stl = sys.argv[1]\n    n = int(sys.argv[2]) if len(sys.argv) > 2 else 6000\n    print(json.dumps(wall_check(stl, n), indent=2))\nPY",
+    "baseline_v48": {
+      "samples": null,
+      "hits": null,
+      "misses": null,
+      "degenerate_under_0.05mm": null,
+      "median_mm": null,
+      "p05_mm": null,
+      "p95_mm": null,
+      "min_mm": null,
+      "mean_wall_volume_over_area_mm": null,
+      "volume_cm3": null,
+      "area_cm2": null,
+      "gate": "pass"
+    },
+    "method_validation": {
+      "synthetic": "封闭中空立方体，外 60mm / 内 54mm（真值壁厚 3.000mm）",
+      "measured": {
+        "median_mm": null,
+        "p05_mm": null,
+        "min_mm": null,
+        "mean_wall_volume_over_area_mm": null,
+        "hits": null,
+        "misses": null
+      },
+      "verdict": "真值回收 3.000 -> 2.999，方法有效"
+    }
+  },
+  "watertight": {
+    "stage": "S0/S1/S2/S3 每步产物",
+    "method": "trimesh 拓扑统计：边使用计数（boundary=1 次、nonmanifold>2 次）、绕向一致性、连通体、欧拉示性数、退化三角（面积<1e-9 mm²）。",
+    "thresholds": {
+      "watertight": true,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "winding_consistent": true,
+      "degenerate_faces": 0
+    },
+    "command": "PYTHONPATH=.pylib python3 - out/v48/shell.stl <<'PY'\n# C2 watertight / manifold check.\n# usage: PYTHONPATH=.pylib python3 c2_watertight.py <stl>\nimport json\nimport sys\n\nimport numpy as np\nimport trimesh\n\n\ndef watertight_check(stl):\n    mesh = trimesh.load(stl)\n    faces = mesh.faces\n    edges = np.sort(np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)\n    uniq, counts = np.unique(edges, axis=0, return_counts=True)\n    boundary = int((counts == 1).sum())\n    nonmanifold = int((counts > 2).sum())\n    area = mesh.area_faces\n    return {\n        \"check\": \"watertight\",\n        \"stl\": stl,\n        \"triangles\": int(len(faces)),\n        \"vertices\": int(len(mesh.vertices)),\n        \"euler\": int(mesh.euler_number),\n        \"bodies\": int(mesh.body_count),\n        \"watertight\": bool(mesh.is_watertight),\n        \"winding_consistent\": bool(mesh.is_winding_consistent),\n        \"boundary_edges\": boundary,\n        \"nonmanifold_edges\": nonmanifold,\n        \"degenerate_faces\": int((area < 1e-9).sum()),\n        \"volume_cm3\": round(float(mesh.volume / 1000.0), 2),\n    }\n\n\nif __name__ == \"__main__\":\n    print(json.dumps(watertight_check(sys.argv[1]), indent=2))\nPY",
+    "command_general": "PYTHONPATH=.pylib python3 - <stl> <<'PY'\n# C2 watertight / manifold check.\n# usage: PYTHONPATH=.pylib python3 c2_watertight.py <stl>\nimport json\nimport sys\n\nimport numpy as np\nimport trimesh\n\n\ndef watertight_check(stl):\n    mesh = trimesh.load(stl)\n    faces = mesh.faces\n    edges = np.sort(np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)\n    uniq, counts = np.unique(edges, axis=0, return_counts=True)\n    boundary = int((counts == 1).sum())\n    nonmanifold = int((counts > 2).sum())\n    area = mesh.area_faces\n    return {\n        \"check\": \"watertight\",\n        \"stl\": stl,\n        \"triangles\": int(len(faces)),\n        \"vertices\": int(len(mesh.vertices)),\n        \"euler\": int(mesh.euler_number),\n        \"bodies\": int(mesh.body_count),\n        \"watertight\": bool(mesh.is_watertight),\n        \"winding_consistent\": bool(mesh.is_winding_consistent),\n        \"boundary_edges\": boundary,\n        \"nonmanifold_edges\": nonmanifold,\n        \"degenerate_faces\": int((area < 1e-9).sum()),\n        \"volume_cm3\": round(float(mesh.volume / 1000.0), 2),\n    }\n\n\nif __name__ == \"__main__\":\n    print(json.dumps(watertight_check(sys.argv[1]), indent=2))\nPY",
+    "baseline_v48": {
+      "triangles": 996540,
+      "vertices": 498274,
+      "euler": 4,
+      "bodies": 2,
+      "watertight": true,
+      "winding_consistent": true,
+      "boundary_edges": 0,
+      "nonmanifold_edges": 0,
+      "degenerate_faces": 0,
+      "volume_cm3": 484.97,
+      "gate": "pass"
+    },
+    "method_validation": {
+      "control_ok": {
+        "stl": "20mm 立方体",
+        "watertight": true,
+        "boundary_edges": 0,
+        "nonmanifold_edges": 0,
+        "euler": 2
+      },
+      "control_broken": {
+        "stl": "同立方体删除 1 个三角",
+        "watertight": false,
+        "boundary_edges": 3,
+        "nonmanifold_edges": 0,
+        "euler": 1
+      },
+      "verdict": "开口面被正确判为不水密"
+    }
+  },
+  "vents": {
+    "stage": "S2 三角通风孔",
+    "geometry": {
+      "count": null,
+      "shape": "等边三角形（贯穿孔）",
+      "side_mm": null,
+      "side_tolerance_mm": null,
+      "aperture_area_mm2": null,
+      "total_open_area_mm2": null,
+      "layout_rule": {
+        "columns": null,
+        "rows": null,
+        "column_x_mm": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "row_z_mm": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "column_pitch_mm": null,
+        "row_pitch_mm": null,
+        "region": "后脑（-Y 侧），中心法向朝外",
+        "orientation": "相邻行尖端朝向相反（奇数行尖朝 +Z，偶数行尖朝 -Z）"
+      },
+      "cutter_rule": "三棱柱沿孔位局部表面法线；长度 = 局部双壁厚 + 两侧各 2mm 余量；切刀越过近侧内壁伸入内腔不得超过 2mm（防内伸切刀），必须贯穿近侧双壁（防盲袋）。",
+      "grid_export": "S2 阶段必须把 40 个孔的 {id, center[3], axis[3], side_mm} 实际值导出为 grid.json，供 C3 grid 模式检查。"
+    },
+    "ray_check": {
+      "method": "沿孔轴射线，首命中分类：命中点在探针面之外 = open（贯穿）；探针面之前 = closed（未贯穿/盲袋）；无命中 = no_hit（探针脱靶，判定失败）。",
+      "probes_per_vent": {
+        "center": "1 条（孔心）",
+        "corners": "3 条（三角顶点向内收 1.0mm）",
+        "ring": "3 条（各边中点向外偏 1.5mm，应落在实体上）"
+      },
+      "thresholds": {
+        "open_center_pass": "40/40",
+        "corners_open_pass": "120/120",
+        "ring_closed_pass": "120/120",
+        "side_mm": [
+          null,
+          null
+        ]
+      }
+    },
+    "command": "PYTHONPATH=.pylib python3 - out/v48/shell.stl scan <<'PY'\n# C3 vent ray check (scan / grid modes).\n# usage: PYTHONPATH=.pylib python3 c3_vents.py <stl> scan\n#        PYTHONPATH=.pylib python3 c3_vents.py <stl> grid <vents.json> [y_split]\nimport json\nimport sys\n\nimport numpy as np\nimport trimesh\nfrom scipy.spatial import cKDTree\n\n\ndef load_accel(mesh):\n    tris = mesh.triangles\n    tree = cKDTree(tris.mean(axis=1))\n    v0 = tris[:, 0, :]\n    e1 = tris[:, 1, :] - v0\n    e2 = tris[:, 2, :] - v0\n    return tree, v0, e1, e2\n\n\ndef first_hits(accel, origins, direction):\n    tree, v0, e1, e2 = accel\n    d = np.asarray(direction, dtype=float)\n    d = d / np.linalg.norm(d)\n    out = []\n    for o in origins:\n        o = np.asarray(o, dtype=float)\n        r = 8.0\n        best = None\n        while r <= 4096.0:\n            cand = tree.query_ball_point(o + d * (r * 0.5), r)\n            if cand:\n                idx = np.asarray(cand, dtype=np.int64)\n                pv = np.cross(d, e2[idx])\n                det = np.einsum(\"ij,ij->i\", e1[idx], pv)\n                ok = np.abs(det) > 1e-12\n                inv = np.zeros_like(det)\n                inv[ok] = 1.0 / det[ok]\n                tv = o - v0[idx]\n                u = np.einsum(\"ij,ij->i\", tv, pv) * inv\n                qv = np.cross(tv, e1[idx])\n                v = np.einsum(\"ij,ij->i\", np.broadcast_to(d, qv.shape), qv) * inv\n                t = np.einsum(\"ij,ij->i\", e2[idx], qv) * inv\n                good = ok & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (t > 1e-3)\n                if good.any():\n                    best = float(np.min(t[good]))\n                    break\n            r *= 2.0\n        out.append(best)\n    return out\n\n\ndef classify(mesh, accel, xz_points, y_start, y_split):\n    \"\"\"+Y ray from (x, y_start, z): open = first hit beyond y_split, closed = before, no_hit = none.\"\"\"\n    origins = [[float(x), float(y_start), float(z)] for x, z in xz_points]\n    ts = first_hits(accel, origins, [0.0, 1.0, 0.0])\n    res = []\n    for t in ts:\n        if t is None:\n            res.append(\"no_hit\")\n        else:\n            res.append(\"open\" if (y_start + t) > y_split else \"closed\")\n    return res\n\n\ndef scan_mode(stl, y_split=0.0, step=10.0):\n    mesh = trimesh.load(stl)\n    accel = load_accel(mesh)\n    mn, mx = mesh.bounds\n    xs = np.arange(mn[0] + step * 0.5, mx[0], step)\n    zs = np.arange(mn[2] + step * 0.5, mx[2], step)\n    probes = [(float(x), float(z)) for x in xs for z in zs]\n    cls = classify(mesh, accel, probes, mn[1] - 20.0, y_split)\n    open_pts = [p for p, c in zip(probes, cls) if c == \"open\"]\n    return {\n        \"check\": \"vents\",\n        \"mode\": \"scan\",\n        \"stl\": stl,\n        \"y_split\": y_split,\n        \"probe_step_mm\": step,\n        \"probes_total\": len(probes),\n        \"open\": cls.count(\"open\"),\n        \"closed\": cls.count(\"closed\"),\n        \"no_hit\": cls.count(\"no_hit\"),\n        \"open_points_xz\": [[round(x, 1), round(z, 1)] for x, z in open_pts[:40]],\n    }\n\n\ndef grid_mode(stl, grid_path, y_split=0.0):\n    \"\"\"grid.json: [{\"id\": 1, \"center\": [x,y,z], \"axis\": [ax,ay,az], \"side_mm\": 10.0}]\n    open  : hit point lies beyond the vent-center plane along the axis (through hole).\n    corner: 3 probes at 89% of the way to the triangle corners must also be open.\n    ring  : 3 probes at 117% (just outside each edge) must be closed (material present).\n    \"\"\"\n    mesh = trimesh.load(stl)\n    accel = load_accel(mesh)\n    grid = json.load(open(grid_path))\n    detail = []\n    n_center = n_corner = n_ring = 0\n    for vent in grid:\n        c = np.asarray(vent[\"center\"], dtype=float)\n        axis = np.asarray(vent.get(\"axis\", [0.0, -1.0, 0.0]), dtype=float)\n        axis = axis / np.linalg.norm(axis)\n        side = float(vent.get(\"side_mm\", 10.0))\n        up = np.array([0.0, 0.0, 1.0])\n        t1 = np.cross(axis, up)\n        if np.linalg.norm(t1) < 1e-6:\n            t1 = np.array([1.0, 0.0, 0.0])\n        t1 = t1 / np.linalg.norm(t1)\n        t2 = np.cross(axis, t1)\n        R = side / np.sqrt(3.0)\n        corners = [c + R * (np.cos(a) * t1 + np.sin(a) * t2)\n                   for a in (np.pi / 2, np.pi / 2 + 2 * np.pi / 3, np.pi / 2 + 4 * np.pi / 3)]\n        # corner probes: 1.0 mm inside each corner; ring probes: edge midpoints pushed 1.5 mm outward\n        inner = [c + (k - c) * (1.0 - 1.0 / R) for k in corners]\n        ring = []\n        for i in range(3):\n            k1, k2 = corners[i], corners[(i + 1) % 3]\n            mid = 0.5 * (k1 + k2)\n            v = mid - c\n            ring.append(c + v * (1.0 + 1.5 / np.linalg.norm(v)))\n\n        def open_at(p):\n            t = first_hits(accel, [p - axis * 300.0], axis)[0]\n            if t is None:\n                return False\n            hit = (p - axis * 300.0) + axis * t\n            return bool(np.dot(hit - p, axis) > 0.0)\n\n        c_open = open_at(c)\n        k_open = [open_at(k) for k in inner]\n        r_open = [open_at(k) for k in ring]\n        n_center += int(c_open)\n        n_corner += int(sum(k_open))\n        n_ring += int(sum(1 for x in r_open if not x))\n        detail.append({\"id\": vent.get(\"id\"), \"open_center\": c_open,\n                       \"corners_open\": int(sum(k_open)), \"ring_closed\": int(sum(1 for x in r_open if not x))})\n    total = max(len(grid), 1)\n    return {\n        \"check\": \"vents\",\n        \"mode\": \"grid\",\n        \"stl\": stl,\n        \"y_split\": y_split,\n        \"vents_total\": len(grid),\n        \"open_center_pass\": \"%d/%d\" % (n_center, len(grid)),\n        \"corners_open_pass\": \"%d/%d\" % (n_corner, len(grid) * 3),\n        \"ring_closed_pass\": \"%d/%d\" % (n_ring, len(grid) * 3),\n        \"side_mm_nominal\": grid[0].get(\"side_mm\", 10.0) if grid else None,\n        \"detail\": detail,\n    }\n\n\nif __name__ == \"__main__\":\n    stl = sys.argv[1]\n    mode = sys.argv[2] if len(sys.argv) > 2 else \"scan\"\n    if mode == \"scan\":\n        print(json.dumps(scan_mode(stl), indent=2))\n    else:\n        ys = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0\n        print(json.dumps(grid_mode(stl, sys.argv[3], ys), indent=2))\nPY",
+    "command_grid": "PYTHONPATH=.pylib python3 - <stl> grid <grid.json> <y_split> <<'PY'\n# C3 vent ray check (scan / grid modes).\n# usage: PYTHONPATH=.pylib python3 c3_vents.py <stl> scan\n#        PYTHONPATH=.pylib python3 c3_vents.py <stl> grid <vents.json> [y_split]\nimport json\nimport sys\n\nimport numpy as np\nimport trimesh\nfrom scipy.spatial import cKDTree\n\n\ndef load_accel(mesh):\n    tris = mesh.triangles\n    tree = cKDTree(tris.mean(axis=1))\n    v0 = tris[:, 0, :]\n    e1 = tris[:, 1, :] - v0\n    e2 = tris[:, 2, :] - v0\n    return tree, v0, e1, e2\n\n\ndef first_hits(accel, origins, direction):\n    tree, v0, e1, e2 = accel\n    d = np.asarray(direction, dtype=float)\n    d = d / np.linalg.norm(d)\n    out = []\n    for o in origins:\n        o = np.asarray(o, dtype=float)\n        r = 8.0\n        best = None\n        while r <= 4096.0:\n            cand = tree.query_ball_point(o + d * (r * 0.5), r)\n            if cand:\n                idx = np.asarray(cand, dtype=np.int64)\n                pv = np.cross(d, e2[idx])\n                det = np.einsum(\"ij,ij->i\", e1[idx], pv)\n                ok = np.abs(det) > 1e-12\n                inv = np.zeros_like(det)\n                inv[ok] = 1.0 / det[ok]\n                tv = o - v0[idx]\n                u = np.einsum(\"ij,ij->i\", tv, pv) * inv\n                qv = np.cross(tv, e1[idx])\n                v = np.einsum(\"ij,ij->i\", np.broadcast_to(d, qv.shape), qv) * inv\n                t = np.einsum(\"ij,ij->i\", e2[idx], qv) * inv\n                good = ok & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (t > 1e-3)\n                if good.any():\n                    best = float(np.min(t[good]))\n                    break\n            r *= 2.0\n        out.append(best)\n    return out\n\n\ndef classify(mesh, accel, xz_points, y_start, y_split):\n    \"\"\"+Y ray from (x, y_start, z): open = first hit beyond y_split, closed = before, no_hit = none.\"\"\"\n    origins = [[float(x), float(y_start), float(z)] for x, z in xz_points]\n    ts = first_hits(accel, origins, [0.0, 1.0, 0.0])\n    res = []\n    for t in ts:\n        if t is None:\n            res.append(\"no_hit\")\n        else:\n            res.append(\"open\" if (y_start + t) > y_split else \"closed\")\n    return res\n\n\ndef scan_mode(stl, y_split=0.0, step=10.0):\n    mesh = trimesh.load(stl)\n    accel = load_accel(mesh)\n    mn, mx = mesh.bounds\n    xs = np.arange(mn[0] + step * 0.5, mx[0], step)\n    zs = np.arange(mn[2] + step * 0.5, mx[2], step)\n    probes = [(float(x), float(z)) for x in xs for z in zs]\n    cls = classify(mesh, accel, probes, mn[1] - 20.0, y_split)\n    open_pts = [p for p, c in zip(probes, cls) if c == \"open\"]\n    return {\n        \"check\": \"vents\",\n        \"mode\": \"scan\",\n        \"stl\": stl,\n        \"y_split\": y_split,\n        \"probe_step_mm\": step,\n        \"probes_total\": len(probes),\n        \"open\": cls.count(\"open\"),\n        \"closed\": cls.count(\"closed\"),\n        \"no_hit\": cls.count(\"no_hit\"),\n        \"open_points_xz\": [[round(x, 1), round(z, 1)] for x, z in open_pts[:40]],\n    }\n\n\ndef grid_mode(stl, grid_path, y_split=0.0):\n    \"\"\"grid.json: [{\"id\": 1, \"center\": [x,y,z], \"axis\": [ax,ay,az], \"side_mm\": 10.0}]\n    open  : hit point lies beyond the vent-center plane along the axis (through hole).\n    corner: 3 probes at 89% of the way to the triangle corners must also be open.\n    ring  : 3 probes at 117% (just outside each edge) must be closed (material present).\n    \"\"\"\n    mesh = trimesh.load(stl)\n    accel = load_accel(mesh)\n    grid = json.load(open(grid_path))\n    detail = []\n    n_center = n_corner = n_ring = 0\n    for vent in grid:\n        c = np.asarray(vent[\"center\"], dtype=float)\n        axis = np.asarray(vent.get(\"axis\", [0.0, -1.0, 0.0]), dtype=float)\n        axis = axis / np.linalg.norm(axis)\n        side = float(vent.get(\"side_mm\", 10.0))\n        up = np.array([0.0, 0.0, 1.0])\n        t1 = np.cross(axis, up)\n        if np.linalg.norm(t1) < 1e-6:\n            t1 = np.array([1.0, 0.0, 0.0])\n        t1 = t1 / np.linalg.norm(t1)\n        t2 = np.cross(axis, t1)\n        R = side / np.sqrt(3.0)\n        corners = [c + R * (np.cos(a) * t1 + np.sin(a) * t2)\n                   for a in (np.pi / 2, np.pi / 2 + 2 * np.pi / 3, np.pi / 2 + 4 * np.pi / 3)]\n        # corner probes: 1.0 mm inside each corner; ring probes: edge midpoints pushed 1.5 mm outward\n        inner = [c + (k - c) * (1.0 - 1.0 / R) for k in corners]\n        ring = []\n        for i in range(3):\n            k1, k2 = corners[i], corners[(i + 1) % 3]\n            mid = 0.5 * (k1 + k2)\n            v = mid - c\n            ring.append(c + v * (1.0 + 1.5 / np.linalg.norm(v)))\n\n        def open_at(p):\n            t = first_hits(accel, [p - axis * 300.0], axis)[0]\n            if t is None:\n                return False\n            hit = (p - axis * 300.0) + axis * t\n            return bool(np.dot(hit - p, axis) > 0.0)\n\n        c_open = open_at(c)\n        k_open = [open_at(k) for k in inner]\n        r_open = [open_at(k) for k in ring]\n        n_center += int(c_open)\n        n_corner += int(sum(k_open))\n        n_ring += int(sum(1 for x in r_open if not x))\n        detail.append({\"id\": vent.get(\"id\"), \"open_center\": c_open,\n                       \"corners_open\": int(sum(k_open)), \"ring_closed\": int(sum(1 for x in r_open if not x))})\n    total = max(len(grid), 1)\n    return {\n        \"check\": \"vents\",\n        \"mode\": \"grid\",\n        \"stl\": stl,\n        \"y_split\": y_split,\n        \"vents_total\": len(grid),\n        \"open_center_pass\": \"%d/%d\" % (n_center, len(grid)),\n        \"corners_open_pass\": \"%d/%d\" % (n_corner, len(grid) * 3),\n        \"ring_closed_pass\": \"%d/%d\" % (n_ring, len(grid) * 3),\n        \"side_mm_nominal\": grid[0].get(\"side_mm\", 10.0) if grid else None,\n        \"detail\": detail,\n    }\n\n\nif __name__ == \"__main__\":\n    stl = sys.argv[1]\n    mode = sys.argv[2] if len(sys.argv) > 2 else \"scan\"\n    if mode == \"scan\":\n        print(json.dumps(scan_mode(stl), indent=2))\n    else:\n        ys = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0\n        print(json.dumps(grid_mode(stl, sys.argv[3], ys), indent=2))\nPY",
+    "baseline_v48": {
+      "mode": "scan",
+      "probe_step_mm": null,
+      "probes_total": null,
+      "open": null,
+      "closed": null,
+      "no_hit": null,
+      "interpretation": "fixture 为 S1 抽壳产物（水密、χ=4、2 个闭合体，0 个贯穿孔），扫描 0 个开口探针，与所处阶段一致；S2 门禁（40/40 贯穿）在开孔后的产物上执行。",
+      "gate_at_S1": "pass"
+    },
+    "method_validation": {
+      "target": "out/m1b/shell_full.stl（真实 48 个 Ø6 贯穿孔，位置 x∈{-63..63}，z∈{10..100}）",
+      "grid_mode_side_mm": null,
+      "measured": {
+        "open_center_pass": "48/48",
+        "corners_open_pass": "144/144",
+        "ring_closed_pass": "144/144"
+      },
+      "scan_mode": {
+        "probes_total": null,
+        "open": null,
+        "closed": null,
+        "no_hit": null
+      },
+      "verdict": "48/48 贯穿孔全部检出，环探针 144/144 落在实体上；射线判定方法有效"
+    }
+  },
+  "flange": {
+    "stage": "S3 竖向分件 + 法兰",
+    "split": {
+      "plane": "竖直面（含 Z 轴），法向 ±Y",
+      "y_split_mm": null,
+      "parts": [
+        "shell_front.stl (y >= 0)",
+        "shell_back.stl (y <= 0)"
+      ],
+      "each_part_gates": [
+        "C2 watertight",
+        "C1 wall",
+        "C4 flange"
+      ]
+    },
+    "geometry": {
+      "per_side_lip": "宽 8.0mm（分件面内、沿截线外法向）× 厚 2.0mm（沿 ±Y）",
+      "mating_gap_mm": [
+        null,
+        null
+      ],
+      "smoothness": "法兰必须由光顺截线（低通/样条）驱动生成，禁止直接沿三角化边放样"
+    },
+    "radial_deviation": {
+      "definition": "法兰唇环带外缘到内缘的径向宽度 w 相对名义 8.0mm 的偏差，以及沿截线相邻测点（约 1mm 间隔）的宽度抖动。",
+      "thresholds": {
+        "width_mm_nominal": null,
+        "radial_dev_p95_mm_max": null,
+        "radial_dev_max_mm_max": null,
+        "jitter_p95_mm_max": null,
+        "thickness_mm": [
+          null,
+          null
+        ]
+      }
+    },
+    "command": "PYTHONPATH=.pylib python3 - out/v48/shell.stl 0 8 2 <<'PY'\n# C4 flange radial deviation check (per split part).\n# usage: PYTHONPATH=.pylib python3 c4_flange.py <part.stl> [y_split] [width_mm] [thickness_mm]\nimport json\nimport sys\n\nimport numpy as np\nimport trimesh\nfrom scipy.spatial import cKDTree\n\n\ndef densify(loop, step=1.0):\n    \"\"\"Resample a closed 2D loop to ~step mm spacing.\"\"\"\n    pts = np.vstack([loop, loop[:1]])\n    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)\n    out = []\n    for a, b, L in zip(pts[:-1], pts[1:], seg):\n        k = max(int(L / step), 1)\n        for i in range(k):\n            out.append(a + (b - a) * (i / k))\n    return np.asarray(out)\n\n\ndef poly_area(loop):\n    x, z = loop[:, 0], loop[:, 1]\n    return 0.5 * float(np.dot(x, np.roll(z, -1)) - np.dot(z, np.roll(x, -1)))\n\n\ndef boundary_loops(mesh, mask):\n    \"\"\"Connected boundary loops (2D x,z) of the face subset `mask`.\"\"\"\n    faces = mesh.faces[mask]\n    if len(faces) == 0:\n        return []\n    edges = np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])\n    key = np.sort(edges, axis=1)\n    uniq, counts = np.unique(key, axis=0, return_counts=True)\n    bnd = uniq[counts == 1]\n    if len(bnd) == 0:\n        return []\n    parent = {}\n\n    def find(a):\n        while parent[a] != a:\n            parent[a] = parent[parent[a]]\n            a = parent[a]\n        return a\n\n    def union(a, b):\n        ra, rb = find(a), find(b)\n        if ra != rb:\n            parent[ra] = rb\n\n    for a, b in bnd:\n        for v in (int(a), int(b)):\n            parent.setdefault(v, v)\n        union(int(a), int(b))\n    comps = {}\n    for v in parent:\n        comps.setdefault(find(v), []).append(v)\n    loops = []\n    for vs in comps.values():\n        if len(vs) >= 8:\n            P = mesh.vertices[vs][:, [0, 2]]\n            order = list(range(len(vs)))\n            cen = P.mean(axis=0)\n            ang = np.arctan2(P[:, 1] - cen[1], P[:, 0] - cen[0])\n            loop = P[np.argsort(ang)]\n            loops.append(loop)\n    return loops\n\n\ndef waviness(values, window=30):\n    \"\"\"|v - rolling_median(v)| around a closed profile; no chord artifact on curved loops.\"\"\"\n    v = np.asarray(values, dtype=float)\n    n = len(v)\n    if n < 16:\n        return None\n    w = min(window, max(n // 3, 2))\n    ext = np.concatenate([v[-w:], v, v[:w]])\n    med = np.array([np.median(ext[i:i + 2 * w + 1]) for i in range(n)])\n    d = np.abs(v - med)\n    return {\"p95_mm\": round(float(np.percentile(d, 95)), 3), \"max_mm\": round(float(d.max()), 3)}\n\n\ndef plane_slices(mesh, y0):\n    \"\"\"Chain triangle/plane y=y0 intersection segments into closed 2D loops (pure numpy).\"\"\"\n    V = mesh.vertices\n    F = mesh.faces\n    y = V[:, 1] - y0\n    sy = y[F]\n    cross = (sy.min(axis=1) < 0) & (sy.max(axis=1) > 0)\n    segs = []\n    for f in F[cross]:\n        p = V[f]\n        d = y[f]\n        pts = []\n        for i in range(3):\n            a, b = i, (i + 1) % 3\n            if (d[a] < 0) != (d[b] < 0):\n                t = d[a] / (d[a] - d[b])\n                pts.append(p[a] + (p[b] - p[a]) * t)\n            elif abs(d[i]) < 1e-9:\n                pts.append(p[i])\n        if len(pts) >= 2:\n            segs.append((pts[0][[0, 2]], pts[1][[0, 2]]))\n    if not segs:\n        return []\n    pts_all = np.array([q for s in segs for q in s])\n    # cluster segment endpoints into nodes (0.05mm), then walk the graph\n    tree = cKDTree(pts_all)\n    pairs = tree.query_pairs(0.05, output_type=\"ndarray\")\n    parent = np.arange(len(pts_all))\n\n    def find(a):\n        while parent[a] != a:\n            parent[a] = parent[parent[a]]\n            a = parent[a]\n        return a\n\n    for a, b in pairs:\n        ra, rb = find(int(a)), find(int(b))\n        if ra != rb:\n            parent[ra] = rb\n    node = np.array([find(i) for i in range(len(pts_all))])\n    adj = {}\n    for si, (a, b) in enumerate(segs):\n        na, nb = node[2 * si], node[2 * si + 1]\n        if na != nb:\n            adj.setdefault(na, []).append(nb)\n            adj.setdefault(nb, []).append(na)\n    node_pos = {}\n    for i in range(len(pts_all)):\n        node_pos.setdefault(node[i], pts_all[i])\n    seen = set()\n    loops = []\n    for start in adj:\n        if start in seen:\n            continue\n        stack = [start]\n        comp = []\n        seen.add(start)\n        while stack:\n            u = stack.pop()\n            comp.append(u)\n            for w in adj.get(u, []):\n                if w not in seen:\n                    seen.add(w)\n                    stack.append(w)\n        if len(comp) >= 12:\n            P = np.array([node_pos[u] for u in comp])\n            cen = P.mean(axis=0)\n            ang = np.arctan2(P[:, 1] - cen[1], P[:, 0] - cen[0])\n            loops.append(P[np.argsort(ang)])\n    return loops\n\n\ndef flange_check(stl, y_split=0.0, width_nominal=8.0, thickness_nominal=2.0):\n    mesh = trimesh.load(stl)\n    cent = mesh.triangles.mean(axis=1)\n    nrm = mesh.face_normals\n    band = np.abs(cent[:, 1] - y_split) <= thickness_nominal + 0.6\n    tab = band & (np.abs(nrm[:, 1]) >= 0.95)\n    out = {\"check\": \"flange\", \"stl\": stl, \"y_split\": y_split,\n           \"width_nominal_mm\": width_nominal, \"thickness_nominal_mm\": thickness_nominal,\n           \"tab_faces\": int(tab.sum())}\n    if tab.sum() < 20:\n        out[\"tab_present\"] = False\n        out[\"note\"] = \"no flange tab found (stage not reached / wrong split plane)\"\n    else:\n        out[\"tab_present\"] = True\n        ytab = cent[tab][:, 1]\n        out[\"tab_y_planes_mm\"] = [round(float(v), 3) for v in np.unique(np.round(ytab, 2))]\n        out[\"thickness_mm\"] = round(float(np.max(np.abs(ytab - y_split))), 3)\n        out[\"thickness_dev_mm\"] = round(abs(out[\"thickness_mm\"] - thickness_nominal), 3)\n        planes = []\n        for yp in np.unique(np.round(ytab, 2)):\n            m2 = tab.copy()\n            m2[tab] = np.abs(ytab - yp) < 0.05\n            loops = boundary_loops(mesh, m2)\n            if len(loops) < 2:\n                continue\n            loops.sort(key=lambda L: abs(poly_area(L)), reverse=True)\n            outer = densify(loops[0])\n            inner = densify(loops[1])\n            tree = cKDTree(inner)\n            dist, _ = tree.query(outer)\n            dev = np.abs(dist - width_nominal)\n            step = np.linalg.norm(np.diff(np.vstack([outer, outer[:1]]), axis=0), axis=1)\n            jit = np.abs(np.diff(dist, append=dist[0]))\n            sel = step <= 4.0\n            planes.append({\n                \"y_plane\": float(yp),\n                \"width_mm\": {\"p05\": round(float(np.percentile(dist, 5)), 3),\n                             \"median\": round(float(np.median(dist)), 3),\n                             \"p95\": round(float(np.percentile(dist, 95)), 3)},\n                \"radial_dev_mm\": {\"p95\": round(float(np.percentile(dev, 95)), 3),\n                                  \"max\": round(float(dev.max()), 3)},\n                \"jitter_p95_mm\": round(float(np.percentile(jit[sel], 95)), 3) if sel.any() else None,\n                \"width_waviness\": waviness(dist, 30),\n            })\n        out[\"plates\"] = planes\n        if planes:\n            out[\"radial_dev_p95_mm\"] = max(p[\"radial_dev_mm\"][\"p95\"] for p in planes)\n            out[\"radial_dev_max_mm\"] = max(p[\"radial_dev_mm\"][\"max\"] for p in planes)\n            jit = [p[\"jitter_p95_mm\"] for p in planes if p[\"jitter_p95_mm\"] is not None]\n            out[\"jitter_p95_mm\"] = max(jit) if jit else None\n    # seam substrate: section loops at y_split (what any flange inherits)\n    try:\n        loops = plane_slices(mesh, y_split)\n        if loops:\n            loops.sort(key=lambda L: abs(poly_area(L)), reverse=True)\n            entry = {\"loops\": len(loops), \"outer_loop_points\": int(len(loops[0]))}\n            if len(loops) >= 2:\n                outer = densify(loops[0])\n                inner = densify(loops[1])\n                d, _ = cKDTree(inner).query(outer)\n                entry[\"band_width_mm\"] = {\"p05\": round(float(np.percentile(d, 5)), 3),\n                                          \"median\": round(float(np.median(d)), 3),\n                                          \"p95\": round(float(np.percentile(d, 95)), 3)}\n                step = np.linalg.norm(np.diff(np.vstack([outer, outer[:1]]), axis=0), axis=1)\n                jit = np.abs(np.diff(d, append=d[0]))\n                sel = step <= 4.0\n                entry[\"band_jitter_p95_mm\"] = round(float(np.percentile(jit[sel], 95)), 3) if sel.any() else None\n                entry[\"band_waviness\"] = waviness(d, 30)\n            out[\"seam_section\"] = entry\n    except Exception as exc:\n        out[\"seam_section_error\"] = str(exc)\n    return out\n\n\nif __name__ == \"__main__\":\n    stl = sys.argv[1]\n    ys = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0\n    w = float(sys.argv[3]) if len(sys.argv) > 3 else 8.0\n    t = float(sys.argv[4]) if len(sys.argv) > 4 else 2.0\n    print(json.dumps(flange_check(stl, ys, w, t), indent=2))\nPY",
+    "command_general": "PYTHONPATH=.pylib python3 - <part.stl> <y_split> <width_mm> <thickness_mm> <<'PY'\n# C4 flange radial deviation check (per split part).\n# usage: PYTHONPATH=.pylib python3 c4_flange.py <part.stl> [y_split] [width_mm] [thickness_mm]\nimport json\nimport sys\n\nimport numpy as np\nimport trimesh\nfrom scipy.spatial import cKDTree\n\n\ndef densify(loop, step=1.0):\n    \"\"\"Resample a closed 2D loop to ~step mm spacing.\"\"\"\n    pts = np.vstack([loop, loop[:1]])\n    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)\n    out = []\n    for a, b, L in zip(pts[:-1], pts[1:], seg):\n        k = max(int(L / step), 1)\n        for i in range(k):\n            out.append(a + (b - a) * (i / k))\n    return np.asarray(out)\n\n\ndef poly_area(loop):\n    x, z = loop[:, 0], loop[:, 1]\n    return 0.5 * float(np.dot(x, np.roll(z, -1)) - np.dot(z, np.roll(x, -1)))\n\n\ndef boundary_loops(mesh, mask):\n    \"\"\"Connected boundary loops (2D x,z) of the face subset `mask`.\"\"\"\n    faces = mesh.faces[mask]\n    if len(faces) == 0:\n        return []\n    edges = np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])\n    key = np.sort(edges, axis=1)\n    uniq, counts = np.unique(key, axis=0, return_counts=True)\n    bnd = uniq[counts == 1]\n    if len(bnd) == 0:\n        return []\n    parent = {}\n\n    def find(a):\n        while parent[a] != a:\n            parent[a] = parent[parent[a]]\n            a = parent[a]\n        return a\n\n    def union(a, b):\n        ra, rb = find(a), find(b)\n        if ra != rb:\n            parent[ra] = rb\n\n    for a, b in bnd:\n        for v in (int(a), int(b)):\n            parent.setdefault(v, v)\n        union(int(a), int(b))\n    comps = {}\n    for v in parent:\n        comps.setdefault(find(v), []).append(v)\n    loops = []\n    for vs in comps.values():\n        if len(vs) >= 8:\n            P = mesh.vertices[vs][:, [0, 2]]\n            order = list(range(len(vs)))\n            cen = P.mean(axis=0)\n            ang = np.arctan2(P[:, 1] - cen[1], P[:, 0] - cen[0])\n            loop = P[np.argsort(ang)]\n            loops.append(loop)\n    return loops\n\n\ndef waviness(values, window=30):\n    \"\"\"|v - rolling_median(v)| around a closed profile; no chord artifact on curved loops.\"\"\"\n    v = np.asarray(values, dtype=float)\n    n = len(v)\n    if n < 16:\n        return None\n    w = min(window, max(n // 3, 2))\n    ext = np.concatenate([v[-w:], v, v[:w]])\n    med = np.array([np.median(ext[i:i + 2 * w + 1]) for i in range(n)])\n    d = np.abs(v - med)\n    return {\"p95_mm\": round(float(np.percentile(d, 95)), 3), \"max_mm\": round(float(d.max()), 3)}\n\n\ndef plane_slices(mesh, y0):\n    \"\"\"Chain triangle/plane y=y0 intersection segments into closed 2D loops (pure numpy).\"\"\"\n    V = mesh.vertices\n    F = mesh.faces\n    y = V[:, 1] - y0\n    sy = y[F]\n    cross = (sy.min(axis=1) < 0) & (sy.max(axis=1) > 0)\n    segs = []\n    for f in F[cross]:\n        p = V[f]\n        d = y[f]\n        pts = []\n        for i in range(3):\n            a, b = i, (i + 1) % 3\n            if (d[a] < 0) != (d[b] < 0):\n                t = d[a] / (d[a] - d[b])\n                pts.append(p[a] + (p[b] - p[a]) * t)\n            elif abs(d[i]) < 1e-9:\n                pts.append(p[i])\n        if len(pts) >= 2:\n            segs.append((pts[0][[0, 2]], pts[1][[0, 2]]))\n    if not segs:\n        return []\n    pts_all = np.array([q for s in segs for q in s])\n    # cluster segment endpoints into nodes (0.05mm), then walk the graph\n    tree = cKDTree(pts_all)\n    pairs = tree.query_pairs(0.05, output_type=\"ndarray\")\n    parent = np.arange(len(pts_all))\n\n    def find(a):\n        while parent[a] != a:\n            parent[a] = parent[parent[a]]\n            a = parent[a]\n        return a\n\n    for a, b in pairs:\n        ra, rb = find(int(a)), find(int(b))\n        if ra != rb:\n            parent[ra] = rb\n    node = np.array([find(i) for i in range(len(pts_all))])\n    adj = {}\n    for si, (a, b) in enumerate(segs):\n        na, nb = node[2 * si], node[2 * si + 1]\n        if na != nb:\n            adj.setdefault(na, []).append(nb)\n            adj.setdefault(nb, []).append(na)\n    node_pos = {}\n    for i in range(len(pts_all)):\n        node_pos.setdefault(node[i], pts_all[i])\n    seen = set()\n    loops = []\n    for start in adj:\n        if start in seen:\n            continue\n        stack = [start]\n        comp = []\n        seen.add(start)\n        while stack:\n            u = stack.pop()\n            comp.append(u)\n            for w in adj.get(u, []):\n                if w not in seen:\n                    seen.add(w)\n                    stack.append(w)\n        if len(comp) >= 12:\n            P = np.array([node_pos[u] for u in comp])\n            cen = P.mean(axis=0)\n            ang = np.arctan2(P[:, 1] - cen[1], P[:, 0] - cen[0])\n            loops.append(P[np.argsort(ang)])\n    return loops\n\n\ndef flange_check(stl, y_split=0.0, width_nominal=8.0, thickness_nominal=2.0):\n    mesh = trimesh.load(stl)\n    cent = mesh.triangles.mean(axis=1)\n    nrm = mesh.face_normals\n    band = np.abs(cent[:, 1] - y_split) <= thickness_nominal + 0.6\n    tab = band & (np.abs(nrm[:, 1]) >= 0.95)\n    out = {\"check\": \"flange\", \"stl\": stl, \"y_split\": y_split,\n           \"width_nominal_mm\": width_nominal, \"thickness_nominal_mm\": thickness_nominal,\n           \"tab_faces\": int(tab.sum())}\n    if tab.sum() < 20:\n        out[\"tab_present\"] = False\n        out[\"note\"] = \"no flange tab found (stage not reached / wrong split plane)\"\n    else:\n        out[\"tab_present\"] = True\n        ytab = cent[tab][:, 1]\n        out[\"tab_y_planes_mm\"] = [round(float(v), 3) for v in np.unique(np.round(ytab, 2))]\n        out[\"thickness_mm\"] = round(float(np.max(np.abs(ytab - y_split))), 3)\n        out[\"thickness_dev_mm\"] = round(abs(out[\"thickness_mm\"] - thickness_nominal), 3)\n        planes = []\n        for yp in np.unique(np.round(ytab, 2)):\n            m2 = tab.copy()\n            m2[tab] = np.abs(ytab - yp) < 0.05\n            loops = boundary_loops(mesh, m2)\n            if len(loops) < 2:\n                continue\n            loops.sort(key=lambda L: abs(poly_area(L)), reverse=True)\n            outer = densify(loops[0])\n            inner = densify(loops[1])\n            tree = cKDTree(inner)\n            dist, _ = tree.query(outer)\n            dev = np.abs(dist - width_nominal)\n            step = np.linalg.norm(np.diff(np.vstack([outer, outer[:1]]), axis=0), axis=1)\n            jit = np.abs(np.diff(dist, append=dist[0]))\n            sel = step <= 4.0\n            planes.append({\n                \"y_plane\": float(yp),\n                \"width_mm\": {\"p05\": round(float(np.percentile(dist, 5)), 3),\n                             \"median\": round(float(np.median(dist)), 3),\n                             \"p95\": round(float(np.percentile(dist, 95)), 3)},\n                \"radial_dev_mm\": {\"p95\": round(float(np.percentile(dev, 95)), 3),\n                                  \"max\": round(float(dev.max()), 3)},\n                \"jitter_p95_mm\": round(float(np.percentile(jit[sel], 95)), 3) if sel.any() else None,\n                \"width_waviness\": waviness(dist, 30),\n            })\n        out[\"plates\"] = planes\n        if planes:\n            out[\"radial_dev_p95_mm\"] = max(p[\"radial_dev_mm\"][\"p95\"] for p in planes)\n            out[\"radial_dev_max_mm\"] = max(p[\"radial_dev_mm\"][\"max\"] for p in planes)\n            jit = [p[\"jitter_p95_mm\"] for p in planes if p[\"jitter_p95_mm\"] is not None]\n            out[\"jitter_p95_mm\"] = max(jit) if jit else None\n    # seam substrate: section loops at y_split (what any flange inherits)\n    try:\n        loops = plane_slices(mesh, y_split)\n        if loops:\n            loops.sort(key=lambda L: abs(poly_area(L)), reverse=True)\n            entry = {\"loops\": len(loops), \"outer_loop_points\": int(len(loops[0]))}\n            if len(loops) >= 2:\n                outer = densify(loops[0])\n                inner = densify(loops[1])\n                d, _ = cKDTree(inner).query(outer)\n                entry[\"band_width_mm\"] = {\"p05\": round(float(np.percentile(d, 5)), 3),\n                                          \"median\": round(float(np.median(d)), 3),\n                                          \"p95\": round(float(np.percentile(d, 95)), 3)}\n                step = np.linalg.norm(np.diff(np.vstack([outer, outer[:1]]), axis=0), axis=1)\n                jit = np.abs(np.diff(d, append=d[0]))\n                sel = step <= 4.0\n                entry[\"band_jitter_p95_mm\"] = round(float(np.percentile(jit[sel], 95)), 3) if sel.any() else None\n                entry[\"band_waviness\"] = waviness(d, 30)\n            out[\"seam_section\"] = entry\n    except Exception as exc:\n        out[\"seam_section_error\"] = str(exc)\n    return out\n\n\nif __name__ == \"__main__\":\n    stl = sys.argv[1]\n    ys = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0\n    w = float(sys.argv[3]) if len(sys.argv) > 3 else 8.0\n    t = float(sys.argv[4]) if len(sys.argv) > 4 else 2.0\n    print(json.dumps(flange_check(stl, ys, w, t), indent=2))\nPY",
+    "baseline_v48": {
+      "tab_present": false,
+      "tab_faces": null,
+      "note": "fixture 停留在 S1（未分件、无法兰），法兰门禁在 S3 产物上执行；以下为分件面截线基底实测（法兰由该截线生成，其抖动即锯齿法兰根因）。",
+      "seam_section": {
+        "loops": null,
+        "outer_loop_points": null,
+        "band_width_mm": {
+          "p05": null,
+          "median": null,
+          "p95": null
+        },
+        "band_jitter_p95_mm": null,
+        "band_waviness": {
+          "p95_mm": null,
+          "max_mm": null
+        }
+      },
+      "gate_at_S1": "pass"
+    },
+    "method_validation": {
+      "good_ring": {
+        "geometry": "环带法兰 r50->58（宽 8.0mm）× 厚 2.0mm",
+        "measured": {
+          "thickness_mm": null,
+          "thickness_dev_mm": null,
+          "width_mm": {
+            "p05": null,
+            "median": null,
+            "p95": null
+          },
+          "radial_dev_p95_mm": null,
+          "radial_dev_max_mm": null,
+          "jitter_p95_mm": null
+        },
+        "gate": "pass"
+      },
+      "jagged_ring": {
+        "geometry": "同上，外缘 ±0.8mm 锯齿（周期 2.8°）",
+        "measured": {
+          "width_mm": {
+            "p05": null,
+            "median": null,
+            "p95": null
+          },
+          "radial_dev_p95_mm": null,
+          "radial_dev_max_mm": null,
+          "jitter_p95_mm": null
+        },
+        "gate": "fail（radial_dev 0.8 > 0.5，jitter 0.822 > 0.3，正确触发锯齿法兰判定）"
+      },
+      "verdict": "8×2mm 法兰的宽度/厚度/径向偏差/抖动均可量化，锯齿样本被正确拒绝"
+    },
+    "current_artifact_note": "out/v56（前契约产物）按本口径实测：唇厚 2.0mm 达标，但贴合面为 y=-2/0/+2 三层结构、y=0 环带宽度中位约 1.4mm，不是 8×2mm 单唇环带 → 需按本契约重建法兰后复检。"
+  },
+  "failure_modes": {
+    "thin_shell_boolean": {
+      "detect": [
+        "watertight.boundary_edges/nonmanifold_edges/degenerate_faces",
+        "wall.p05_mm",
+        "watertight.bodies"
+      ],
+      "gate": "任一超标即 fail，禁止进入下一阶段"
+    },
+    "inward_cutter": {
+      "detect": [
+        "vents.scan open_points 落在名义孔区之外",
+        "wall p05 崩塌 / 异常薄点",
+        "watertight.bodies 出现内腔碎体"
+      ],
+      "gate": "切刀越过近侧内壁 > 2mm 或误穿远侧壁即 fail"
+    },
+    "jagged_flange": {
+      "detect": [
+        "flange.radial_dev_p95_mm",
+        "flange.jitter_p95_mm",
+        "seam_section.band_jitter_p95_mm"
+      ],
+      "gate": "radial_dev_p95 > 0.5mm 或 jitter_p95 > 0.3mm 即 fail"
+    }
+  },
+  "commands_index": {
+    "wall": "wall.command",
+    "watertight": "watertight.command",
+    "vents_scan": "vents.command",
+    "vents_grid": "vents.command_grid",
+    "flange": "flange.command",
+    "aux_topology": "python3 scripts/verify_print_m1b.py <stl> --json <out.json>（既有工具，补充分层/开口清单，不替代 C1–C4）"
+  },
+  "stage_gates": {
+    "S0_clean": [
+      "watertight"
+    ],
+    "S1_shell_3mm": [
+      "wall",
+      "watertight"
+    ],
+    "S2_vents_40": [
+      "vents",
+      "wall",
+      "watertight"
+    ],
+    "S3_split_flange": [
+      "flange",
+      "wall",
+      "watertight"
+    ],
+    "fixture_rule": "fixture out/v48/shell.stl 必须先通过 S1 门禁（wall+watertight），通过后才把前脸输入接入 S2+；fixture 未通过则管线停在 S1，不得接前脸。"
+  },
+  "_redacted": "numeric targets/thresholds are withheld from the public copy; the method text and the check commands are kept so the contract stays reproducible with your own values"
+}

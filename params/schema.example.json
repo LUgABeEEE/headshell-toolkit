@@ -1,0 +1,20 @@
+{
+  "schema": "headshell/params@0",
+  "_note": "Shape only. Concrete values are not published; fill them in or feed a private set.",
+  "face_variant": "neutral",
+  "jaw_width": null,
+  "cheek_fullness": null,
+  "face_length": null,
+  "eye_openness": null,
+  "mouth_open": null,
+  "ipd_mm": null,
+  "head_width_mm": null,
+  "wall_mm": null,
+  "split": {
+    "plane": "coronal",
+    "offset_mm": null
+  },
+  "liner_mm": null,
+  "vent_diameter_mm": null,
+  "vent_spacing_mm": null
+}
